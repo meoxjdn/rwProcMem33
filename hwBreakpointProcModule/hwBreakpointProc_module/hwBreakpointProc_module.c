@@ -1,7 +1,19 @@
-#include "hwBreakpointProc_module.h"
-#include "proc_pid.h"
-#include "api_proxy.h"
-#include "anti_ptrace_detection.h"
+#include <linux/module.h>
+#include <linux/types.h>
+#include <linux/fs.h>
+#include <linux/errno.h>
+#include <linux/mm.h>
+#include <linux/sched.h>
+#include <linux/init.h>
+#include <linux/cdev.h>
+#include <asm/io.h>
+#include <asm/uaccess.h>
+#include <linux/uaccess.h> // 处理 copy_from_user 等
+#include <linux/kernel.h>
+#include <linux/version.h>
+#include <linux/proc_fs.h> // ⭐ 6.6 内核 proc_ops 的核心依赖
+#include <linux/slab.h>
+
 
 
 #pragma pack(push,1)
