@@ -18,12 +18,12 @@ struct ioctl_request {
 #pragma pack(pop)
 //////////////////////////////////////////////////////////////////
 
-// ⭐ 专属定制：游戏偏移地址硬编码在内核，极速响应！
+// ⭐ 专属定制：游戏偏移地址硬编码
 #define OFF_SKIP     0x2639fd8
 #define OFF_SKIP_JMP 0x53709a0
 #define OFF_MAXHP    0x33b2ffc
 
-// ⭐ 定义新指令：接收游戏模块基址
+// 指令定义
 #define CMD_SET_GAME_BASE 22
 static atomic64_t g_game_base = ATOMIC64_INIT(0);
 
@@ -89,27 +89,34 @@ static void hwbp_hit_user_info_callback(struct perf_event *bp,
 }
 
 // ==========================================
-// ⭐ 核心神级 Handler：完美复刻原版 Ptrace 的 PC 跳转逻辑
+// ⭐ 上帝视角 Handler：强制匹配，无视 PC 偏移！
 // ==========================================
 static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, struct pt_regs *regs) {
 	citerator iter;
 	uint64_t hook_pc;
 	uint64_t base = atomic64_read(&g_game_base);
+	
+	// ⭐ 获取当前触发断点【真正绑定的地址】，而不是漂移的 PC
+	uint64_t bp_bound_addr = bp->attr.bp_addr; 
 
-	// 【如果已经接收到了游戏基址，开启内核级拦截判定】
+	// ⭐ 打印雷达日志，使用 dmesg | grep HWBP-BOSS 查看
+	printk_debug(KERN_INFO "[HWBP-BOSS] HIT! PC: 0x%llx | BoundAddr: 0x%llx | LR: 0x%llx\n", 
+		regs->pc, bp_bound_addr, regs->regs[30]);
+
+	// 【强制拦截判定】
 	if (base != 0) {
-		// 1. 秒过功能 (PC 直接跳转到指定函数内部)
-		if (regs->pc == base + OFF_SKIP) {
-			printk_debug(KERN_INFO "SKIP MATCH! Jumping PC to OFF_SKIP_JMP\n");
+		// 1. 秒过功能判断
+		if (bp_bound_addr == base + OFF_SKIP) {
+			printk_debug(KERN_INFO "[HWBP-BOSS] Executing SKIP logic (PC -> OFF_SKIP_JMP)\n");
 			regs->pc = base + OFF_SKIP_JMP;
-			return; // 截断原生处理，完美跳转
+			return; // 截断原生处理
 		}
 
-		// 2. 秒杀/最大血量功能 (修改 X0 并执行 Ret 函数返回)
-		if (regs->pc == base + OFF_MAXHP) {
-			printk_debug(KERN_INFO "MAXHP MATCH! Setting X0=1 and Ret\n");
+		// 2. 秒杀/最大血量判断
+		if (bp_bound_addr == base + OFF_MAXHP) {
+			printk_debug(KERN_INFO "[HWBP-BOSS] Executing MAXHP logic (X0=1, Ret)\n");
 			regs->regs[0] = 1;
-			regs->pc = regs->regs[30]; // 强行将 PC 设为 LR 寄存器
+			regs->pc = regs->regs[30]; // 跳回 LR
 			return; 
 		}
 	}
@@ -356,7 +363,7 @@ static inline ssize_t DispatchCommand(struct ioctl_request *hdr, char __user* bu
 	case CMD_GET_HWBP_HIT_DETAIL: return OnCmdGetHwbpHitDetail(hdr, buf);
 	case CMD_SET_HOOK_PC: return OnCmdSetHookPc(hdr, buf);
 	case CMD_HIDE_KERNEL_MODULE: return OnCmdHideKernelModule(hdr, buf);
-	case CMD_SET_GAME_BASE: return OnCmdSetGameBase(hdr, buf); // ⭐ 绑定基址
+	case CMD_SET_GAME_BASE: return OnCmdSetGameBase(hdr, buf); 
 	default: return -EINVAL;
 	}
 }
@@ -431,7 +438,6 @@ static int hwBreakpointProc_dev_init(void) {
 	g_hwBreakpointProc_devp = x_kmalloc(sizeof(struct hwBreakpointProcDev), GFP_KERNEL);
 	memset(g_hwBreakpointProc_devp, 0, sizeof(struct hwBreakpointProcDev));
 
-	// ⭐ 强制自动创建节点
 	if (alloc_chrdev_region(&g_devno, 0, 1, "hwBreakpointProcMod") == 0) {
 		cdev_init(&g_cdev, &hwbp_dev_fops);
 		g_cdev.owner = THIS_MODULE;
