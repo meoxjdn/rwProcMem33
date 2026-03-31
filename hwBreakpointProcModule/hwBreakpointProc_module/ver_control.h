@@ -5,13 +5,14 @@
 // 独立内核模块入口模式
 #define CONFIG_MODULE_GUIDE_ENTRY
 
-// 生成proc用户层交互节点文件
-#define CONFIG_USE_PROC_FILE_NODE
+// 生成proc用户层交互节点文件 (已关闭，强制使用 /dev/ 节点)
+//#define CONFIG_USE_PROC_FILE_NODE
+
 // 隐蔽通信密钥
 #define CONFIG_PROC_NODE_AUTH_KEY "dce3771681d4c7a143d5d06b7d32548e"
 
-// 调试打印模式
-//#define CONFIG_DEBUG_PRINTK
+// 调试打印模式 (已开启，方便排错)
+#define CONFIG_DEBUG_PRINTK
 
 // 动态寻址模式
 #define CONFIG_KALLSYMS_LOOKUP_NAME
