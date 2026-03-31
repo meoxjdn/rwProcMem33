@@ -1,80 +1,100 @@
-name: Build Driver
+Name: Build Driver (MVP Edition)
 
 on:
-workflow_dispatch:
-push:
+  workflow_dispatch:
+  push:
 
 jobs:
-build:
-runs-on: ubuntu-latest
-strategy:
-fail-fast: false
-matrix:
-include:
-- kernel: "6.1"
-branch: "android14-6.1"
-ndk_ver: "r26b"
-- kernel: "6.6"
-branch: "android15-6.6"
-ndk_ver: "r27"
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kernel: "5.10"
+            branch: "android12-5.10"
+            ndk_ver: "r25c"
+          - kernel: "5.15"
+            branch: "android13-5.15"
+            ndk_ver: "r25c"
+          - kernel: "6.1"
+            branch: "android14-6.1"
+            ndk_ver: "r26b"
+          - kernel: "6.6"
+            branch: "android15-6.6"
+            ndk_ver: "r27"
 
-steps:
-  - name: 拉取源码
-    uses: actions/checkout@v4
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
 
-  - name: 安装依赖
-    run: |
-      sudo apt-get update
-      sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev gcc-aarch64-linux-gnu libdw-dev pahole llvm clang lld
+      - name: 安装基础依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev gcc-aarch64-linux-gnu libdw-dev pahole llvm clang lld
 
-  - name: 安装 NDK
-    run: |
-      cd /opt
-      sudo wget -q https://dl.google.com/android/repository/android-ndk-${{ matrix.ndk_ver }}-linux.zip
-      sudo unzip -q android-ndk-${{ matrix.ndk_ver }}-linux.zip
-      echo "NDK_HOME=/opt/android-ndk-${{ matrix.ndk_ver }}" >> $GITHUB_ENV
+      - name: 安装 NDK
+        run: |
+          cd /opt
+          sudo wget -q https://dl.google.com/android/repository/android-ndk-${{ matrix.ndk_ver }}-linux.zip
+          sudo unzip -q android-ndk-${{ matrix.ndk_ver }}-linux.zip
+          echo "NDK_HOME=/opt/android-ndk-${{ matrix.ndk_ver }}" >> $GITHUB_ENV
 
-  - name: 创建输出目录
-    run: |
-      mkdir -p ${{ github.workspace }}/out/${{ matrix.kernel }}
+      - name: 准备 Makefile (多文件链接)
+        run: |
+          # 自动创建一个 Makefile 确保 hwbp_proc.c 和 module.c 都能编译进去
+          # 这里生成的 .ko 文件名为 hwBreakpointProcMod.ko
+          cat <<EOF > ${{ github.workspace }}/hwBreakpointProcModule/hwBreakpointProc_module/Makefile
+          obj-m += hwBreakpointProcMod.o
+          hwBreakpointProcMod-y := hwBreakpointProc_module.o hwbp_proc.o
+          EOF
 
-  - name: 编译内核模块
-    run: |
-      # 拉内核
-      git clone --depth 1 -b ${{ matrix.branch }} https://android.googlesource.com/kernel/common kernel-source
-      K_DIR=$(pwd)/kernel-source
+      - name: 编译内核模块
+        run: |
+          # 1. 拉取安卓通用内核源码 (GKI)
+          git clone --depth 1 -b ${{ matrix.branch }} https://android.googlesource.com/kernel/common kernel-source
+          K_DIR=$(pwd)/kernel-source
 
-      # Clang
-      CLANG_BIN=${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin
-      export PATH=$CLANG_BIN:$PATH
+          # 2. 配置环境变量
+          CLANG_BIN=${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export PATH=$CLANG_BIN:$PATH
 
-      MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-      CROSS_COMPILE=$CLANG_BIN/aarch64-linux-android- \
-      CLANG_TRIPLE=aarch64-linux-gnu- \
-      CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+          CROSS_COMPILE=$CLANG_BIN/aarch64-linux-android- \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld"
 
-      # 准备内核
-      cd $K_DIR
-      make $MAKE_ARGS gki_defconfig
-      make $MAKE_ARGS modules_prepare
+          # 3. 准备内核头文件
+          cd $K_DIR
+          make $MAKE_ARGS gki_defconfig
+          
+          # 针对 5.x 内核关闭 CFI，防止死机
+          if [[ "${{ matrix.kernel }}" == 5.* ]]; then
+            scripts/config --disable CONFIG_CFI_CLANG
+          fi
+          
+          make $MAKE_ARGS modules_prepare
 
-      # 编译你的驱动
-      cd ${{ github.workspace }}/hwBreakpointProcModule/hwBreakpointProc_module
-      make -C $K_DIR M=$(pwd) $MAKE_ARGS KCFLAGS="-w -Wno-error" KBUILD_MODPOST_WARN=1 modules
+          # 4. 编译驱动代码
+          # 注意：这里路径必须和你仓库里代码的实际路径一致
+          DRV_DIR=${{ github.workspace }}/hwBreakpointProcModule/hwBreakpointProc_module
+          cd $DRV_DIR
+          make -C $K_DIR M=$(pwd) $MAKE_ARGS KCFLAGS="-w -Wno-error" KBUILD_MODPOST_WARN=1 modules
 
-      # 找 ko
-      KO_FILE=$(find . -name "*.ko" | head -n 1)
+          # 5. 整理输出文件
+          mkdir -p ${{ github.workspace }}/out/${{ matrix.kernel }}
+          KO_FILE=$(find . -name "*.ko" | head -n 1)
 
-      if [ -f "$KO_FILE" ]; then
-        cp "$KO_FILE" "${{ github.workspace }}/out/${{ matrix.kernel }}/${{ matrix.kernel }}.ko"
-        echo "✅ 编译成功"
-      else
-        echo "❌ 没找到 ko 文件"
-        exit 1
-      fi
+          if [ -f "$KO_FILE" ]; then
+            cp "$KO_FILE" "${{ github.workspace }}/out/${{ matrix.kernel }}/${{ matrix.kernel }}.ko"
+            echo "✅ ${{ matrix.kernel }} 编译成功"
+          else
+            echo "❌ 没找到 ko 文件"
+            exit 1
+          fi
 
-  - name: 上传结果
-    uses: actions/upload-artifact@v4
-    with:
-      name: driver-${{ matrix.kernel }}
-      path: ${{ github.workspace }}/out/${{ matrix.kernel }}/*.ko
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-${{ matrix.kernel }}
+          path: ${{ github.workspace }}/out/${{ matrix.kernel }}/*.ko
