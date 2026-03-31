@@ -1,0 +1,83 @@
+name: 火影大王-6系巅峰对齐版(上传修复)
+
+on:
+workflow_dispatch:
+
+jobs:
+build:
+runs-on: ubuntu-latest
+strategy:
+fail-fast: false
+matrix:
+include:
+- kernel: "6.1"
+branch: "android14-6.1"
+ndk_ver: "r26b"
+- kernel: "6.6"
+branch: "android15-6.6"
+ndk_ver: "r27"
+
+steps:
+  - name: 拉取驱动源码
+    uses: actions/checkout@v4
+
+  - name: 环境初始化
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev gcc-aarch64-linux-gnu libdw-dev pahole llvm clang lld
+
+  - name: 配置专版 NDK
+    run: |
+      cd /opt
+      sudo wget -q https://dl.google.com/android/repository/android-ndk-${{ matrix.ndk_ver }}-linux.zip
+      sudo unzip -q android-ndk-${{ matrix.ndk_ver }}-linux.zip
+      echo "NDK_HOME=/opt/android-ndk-${{ matrix.ndk_ver }}" >> $GITHUB_ENV
+
+  - name: 源码节点名自动对齐
+    run: |
+      find . -type f -name "ver_control.h" -exec sed -i 's/CONFIG_PROC_NODE_AUTH_KEY "dce3771681d4c7a143d5d06b7d32548e"/CONFIG_PROC_NODE_AUTH_KEY "hwBreakpointProc"/g' {} + || true
+
+  - name: 准备内核并编译
+    run: |
+      # 1. 拉内核源码
+      git clone --depth 1 -b ${{ matrix.branch }} https://android.googlesource.com/kernel/common kernel-source
+      K_DIR=$(pwd)/kernel-source
+
+      # 2. 🔥 创建输出目录（你要的）
+      OUT_DIR=${{ github.workspace }}/out/${{ matrix.kernel }}
+      mkdir -p $OUT_DIR
+
+      # 3. 设置 Clang
+      CLANG_BIN=${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin
+      export PATH=$CLANG_BIN:$PATH
+
+      MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+      CROSS_COMPILE=$CLANG_BIN/aarch64-linux-android- \
+      CLANG_TRIPLE=aarch64-linux-gnu- \
+      CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld"
+
+      # 4. 准备内核头
+      cd $K_DIR
+      make $MAKE_ARGS gki_defconfig
+      make $MAKE_ARGS modules_prepare
+
+      # 5. 编译驱动
+      cd ${{ github.workspace }}/hwBreakpointProcModule/hwBreakpointProc_module
+      make -C $K_DIR M=$(pwd) $MAKE_ARGS KCFLAGS="-w -Wno-error" KBUILD_MODPOST_WARN=1 modules
+
+      # 6. 🔥 查找并复制 ko
+      KO_FILE=$(find . -name "*.ko" | head -n 1)
+
+      if [ -f "$KO_FILE" ]; then
+        cp "$KO_FILE" "$OUT_DIR/${{ matrix.kernel }}.ko"
+        echo "✅ 编译成功: $OUT_DIR/${{ matrix.kernel }}.ko"
+      else
+        echo "❌ 未找到 ko 文件，编译失败"
+        exit 1
+      fi
+
+  - name: 上传 6 系驱动
+    uses: actions/upload-artifact@v4
+    with:
+      name: Fire-Shadow-6-Series-${{ matrix.kernel }}
+      path: ${{ github.workspace }}/out/${{ matrix.kernel }}/*.ko
