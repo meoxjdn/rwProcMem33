@@ -1,19 +1,9 @@
-#include <linux/module.h>
-#include <linux/types.h>
-#include <linux/fs.h>
-#include <linux/errno.h>
-#include <linux/mm.h>
-#include <linux/sched.h>
-#include <linux/init.h>
-#include <linux/cdev.h>
-#include <asm/io.h>
-#include <asm/uaccess.h>
-#include <linux/uaccess.h> // 处理 copy_from_user 等
-#include <linux/kernel.h>
-#include <linux/version.h>
-#include <linux/proc_fs.h> // ⭐ 6.6 内核 proc_ops 的核心依赖
-#include <linux/slab.h>
+#include <linux/proc_fs.h> // ⭐ 解决 6.6 内核 incomplete type 'const struct proc_ops' 报错的关键头文件
 
+#include "hwBreakpointProc_module.h"
+#include "proc_pid.h"
+#include "api_proxy.h"
+#include "anti_ptrace_detection.h"
 
 
 #pragma pack(push,1)
@@ -26,6 +16,10 @@ struct ioctl_request {
 };
 #pragma pack(pop)
 //////////////////////////////////////////////////////////////////
+
+// ⭐ 新增：定义你的测试命令字和MVP目标地址
+#define CMD_SET_MVP_ADDR 21
+static atomic64_t g_mvp_target_addr = ATOMIC64_INIT(0);
 
 static atomic64_t g_hook_pc;
 
@@ -102,7 +96,18 @@ static void hwbp_handler(struct perf_event *bp,
 	struct pt_regs *regs) {
 	citerator iter;
 	uint64_t hook_pc;
+	uint64_t mvp_addr; // ⭐ 新增：MVP目标地址
+
 	printk_debug(KERN_INFO "hw_breakpoint HIT!!!!! bp:%px, pc:%px, id:%d\n", bp, regs->pc, bp->id);
+
+	// ⭐ 新增：MVP 拦截与篡改核心逻辑 (秒过 / 最大血量)
+	mvp_addr = atomic64_read(&g_mvp_target_addr);
+	if (mvp_addr != 0 && regs->pc == mvp_addr) {
+		printk_debug(KERN_INFO "MVP MATCH! Executing Kernel Tampering for addr: %llx\n", mvp_addr);
+		regs->regs[0] = 1;         // 修改 X0=1
+		regs->pc = regs->regs[30]; // 返回到 LR 寄存器
+		return;                    // 直接截断，不走下方的单步步过逻辑
+	}
 
 	hook_pc = atomic64_read(&g_hook_pc);
 	if(hook_pc) {
@@ -417,6 +422,15 @@ static ssize_t OnCmdHideKernelModule(struct ioctl_request *hdr, char __user* buf
 	return 0;
 }
 
+// ⭐ 新增：处理 MVP 拦截地址的下发
+static ssize_t OnCmdSetMvpAddr(struct ioctl_request *hdr, char __user* buf) {
+	uint64_t addr = hdr->param1;
+	printk_debug(KERN_INFO "CMD_SET_MVP_ADDR\n");
+	printk_debug(KERN_INFO "mvp_target_addr:%llx\n", addr);
+	atomic64_set(&g_mvp_target_addr, addr);
+	return 0;
+}
+
 static inline ssize_t DispatchCommand(struct ioctl_request *hdr, char __user* buf) {
 	switch (hdr->cmd) {
 	case CMD_OPEN_PROCESS:
@@ -443,6 +457,8 @@ static inline ssize_t DispatchCommand(struct ioctl_request *hdr, char __user* bu
 		return OnCmdSetHookPc(hdr, buf);
 	case CMD_HIDE_KERNEL_MODULE:
 		return OnCmdHideKernelModule(hdr, buf);
+	case CMD_SET_MVP_ADDR: // ⭐ 新增：路由调用
+		return OnCmdSetMvpAddr(hdr, buf);
 	default:
 		return -EINVAL;
 	}
@@ -600,4 +616,3 @@ unsigned long __stack_chk_guard;
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Linux");
 MODULE_DESCRIPTION("Linux default module");
-
