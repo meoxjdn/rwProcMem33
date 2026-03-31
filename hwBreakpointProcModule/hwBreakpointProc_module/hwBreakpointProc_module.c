@@ -100,13 +100,12 @@ static void hwbp_handler(struct perf_event *bp,
 
 	printk_debug(KERN_INFO "hw_breakpoint HIT!!!!! bp:%px, pc:%px, id:%d\n", bp, regs->pc, bp->id);
 
-	// ⭐ 新增：MVP 拦截与篡改核心逻辑 (秒过 / 最大血量)
+	// ⭐ 安全 MVP 拦截与篡改核心逻辑 (修复 zram invalid 死机崩溃)
 	mvp_addr = atomic64_read(&g_mvp_target_addr);
 	if (mvp_addr != 0 && regs->pc == mvp_addr) {
-		printk_debug(KERN_INFO "MVP MATCH! Executing Kernel Tampering for addr: %llx\n", mvp_addr);
-		regs->regs[0] = 1;         // 修改 X0=1
-		regs->pc = regs->regs[30]; // 返回到 LR 寄存器
-		return;                    // 直接截断，不走下方的单步步过逻辑
+		printk_debug(KERN_INFO "MVP MATCH! Setting X0=1 for addr: %llx\n", mvp_addr);
+		regs->regs[0] = 1;         // 只修改 X0=1，保留正常执行流
+		return;                    // 强行跳 PC 会导致内核栈损坏，已去掉跳 LR 逻辑
 	}
 
 	hook_pc = atomic64_read(&g_hook_pc);
